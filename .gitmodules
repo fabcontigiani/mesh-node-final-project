@@ -1,0 +1,3 @@
+[submodule "esp-mdf"]
+	path = esp-mdf
+	url = https://github.com/fabcontigiani/esp-mdf
