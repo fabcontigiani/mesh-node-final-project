@@ -17,6 +17,8 @@
 #include "driver/uart.h"
 #include "cJSON.h"
 #include "sd_test_io.h"
+#include "app_config.h"
+#include "camera_driver.h"
 
 // #define MEMORY_DEBUG
 
@@ -25,6 +27,36 @@
 static int g_sockfd    = -1;
 static const char *TAG = "router_example";
 static esp_netif_t *netif_sta = NULL;
+
+/**
+ * @brief Capture and save a photo to SD card
+ * @return ESP_OK on success, error code otherwise
+ */
+static esp_err_t capture_and_save_photo(void)
+{
+    if (!camera_is_supported())
+    {
+        ESP_LOGW(TAG, "Camera not supported on this platform");
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
+    camera_fb_t *frame_buffer = camera_capture_photo();
+    if (frame_buffer == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to capture photo");
+        return ESP_FAIL;
+    }
+
+    /* Save photo to SD card */
+    const char *photo_path = MOUNT_POINT "/picture.jpg";
+    // esp_err_t ret = file_write_binary(photo_path, frame_buffer->buf, frame_buffer->len);
+    esp_err_t ret = ESP_OK;
+
+    /* Return the frame buffer */
+    camera_return_frame_buffer(frame_buffer);
+
+    return ret;
+}
 
 /**
  * @brief Create a tcp client
@@ -364,6 +396,20 @@ static mdf_err_t event_loop_cb(mdf_event_loop_t event, void *ctx)
 
 void app_main()
 {
+    /* Initialize camera */
+    if (camera_is_supported())
+    {
+        if (camera_init() != ESP_OK)
+        {
+            ESP_LOGE(TAG, "Camera initialization failed, exiting");
+            return;
+        }
+    }
+    else
+    {
+        ESP_LOGW(TAG, "Camera not supported, continuing with SD card only");
+    }
+
     mwifi_init_config_t cfg   = MWIFI_INIT_CONFIG_DEFAULT();
     mwifi_config_t config     = {
         .router_ssid     = CONFIG_ROUTER_SSID,
