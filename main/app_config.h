@@ -10,11 +10,6 @@
 #define portTICK_RATE_MS portTICK_PERIOD_MS
 #endif
 
-/* Application constants */
-#define EXAMPLE_MAX_CHAR_SIZE 64
-#define MOUNT_POINT "/sdcard"
-#define EXAMPLE_IS_UHS1 (CONFIG_EXAMPLE_SDMMC_SPEED_UHS_I_SDR50 || CONFIG_EXAMPLE_SDMMC_SPEED_UHS_I_DDR50)
-
 /* ESP32-CAM (AI-Thinker) Pin Definitions */
 #define CAM_PIN_PWDN    32
 #define CAM_PIN_RESET   -1  // Software reset will be performed

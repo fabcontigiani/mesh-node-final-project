@@ -16,7 +16,6 @@
 #include "mwifi.h"
 #include "driver/uart.h"
 #include "cJSON.h"
-#include "sd_test_io.h"
 #include "app_config.h"
 #include "camera_driver.h"
 #include "sdcard.h"
@@ -25,9 +24,6 @@ char *root = "/sdcard";
 int clk = 14;
 int cmd = 15;
 int d0 = 2;
-int d1 = 4;
-int d2 = 12;
-int d3 = 13;
 
 // #define MEMORY_DEBUG
 
@@ -251,7 +247,7 @@ static esp_err_t capture_and_save_photo(void)
     }
 
     /* Save photo to SD card */
-    const char *photo_path = MOUNT_POINT "/picture.jpg";
+    const char *photo_path = "/sdcard/picture.jpg";
     // esp_err_t ret = file_write_binary(photo_path, frame_buffer->buf, frame_buffer->len);
     esp_err_t ret = ESP_OK;
 
@@ -641,10 +637,10 @@ void app_main()
     /* Initialize SD card */
     sdcard.debug = true;
     sdcard.version();
-    esp_err_t err = sdcard.sdmmc.mount_data4(root, clk, cmd, d0, d1, d2, d3);
+    esp_err_t err = sdcard.sdmmc.mount_data1(root, clk, cmd, d0);
     if (err)
     {
-        ESP_LOGI(TAG, "sdcard.sdmmc.mount_data4 error (%d) %s\n", err, esp_err_to_name(err));
+        ESP_LOGI(TAG, "sdcard.sdmmc.mount_data1 error (%d) %s\n", err, esp_err_to_name(err));
         return;
     }
 
