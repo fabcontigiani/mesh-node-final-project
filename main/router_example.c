@@ -16,6 +16,7 @@
 #include "mwifi.h"
 #include "driver/uart.h"
 #include "cJSON.h"
+#include "sd_test_io.h"
 
 // #define MEMORY_DEBUG
 
