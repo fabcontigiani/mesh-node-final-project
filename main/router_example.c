@@ -19,14 +19,217 @@
 #include "sd_test_io.h"
 #include "app_config.h"
 #include "camera_driver.h"
+#include "sdcard.h"
+
+char *root = "/sdcard";
+int clk = 14;
+int cmd = 15;
+int d0 = 2;
+int d1 = 4;
+int d2 = 12;
+int d3 = 13;
 
 // #define MEMORY_DEBUG
 
 #define BUF_SIZE (1024)
 
-static int g_sockfd    = -1;
+static int g_sockfd = -1;
 static const char *TAG = "router_example";
 static esp_netif_t *netif_sta = NULL;
+
+void test()
+{
+
+      esp_err_t err;
+
+      sdcard.info_print(root);
+
+      char data[50] = {0};
+      size_t offset;
+      size_t n;
+      size_t size;
+
+      char hello[50] = {0};
+      strcpy(hello, root);
+      strcat(hello, "/hello.txt");
+
+      err = sdcard.dir.list_print(root);
+      if (err)
+      {
+            ESP_LOGI(TAG, "dir.list_print failed");
+            return;
+      }
+
+      ESP_LOGI(TAG, "file.truncate test");
+      err = sdcard.file.truncate(hello);
+      if (err)
+      {
+            ESP_LOGI(TAG, "file.truncate failed");
+            return;
+      }
+      ESP_LOGI(TAG, "ok");
+      ESP_LOGI(TAG, "");
+
+      ESP_LOGI(TAG, "file.append test");
+      for (int i = 0; i < 5; i++)
+      {
+            for (int j = 0; j < 10; j++)
+            {
+                  snprintf(data, 50, "%d", j);
+                  size = strlen(data);
+                  err = sdcard.file.append(hello, data, &size);
+                  if (err != ESP_OK)
+                  {
+                        ESP_LOGI(TAG, "file.append failed");
+                        return;
+                  }
+            }
+      }
+      ESP_LOGI(TAG, "ok");
+      ESP_LOGI(TAG, "");
+
+      ESP_LOGI(TAG, "file.write_offset test");
+      offset = 5;
+      size = 5;
+      memset(data, 'x', size);
+      err = sdcard.file.write_offset(hello, offset, data, &size);
+      if (err)
+      {
+            ESP_LOGI(TAG, "file.write_offset failed");
+            return;
+      }
+      ESP_LOGI(TAG, "ok");
+      ESP_LOGI(TAG, "");
+
+      ESP_LOGI(TAG, "file.read_offset test");
+      offset = 0;
+      size = 10;
+      err = sdcard.file.read_offset(hello, offset, data, &size);
+      if (err)
+      {
+            ESP_LOGI(TAG, "file.read_offset failed");
+            return;
+      }
+      sdcard.fn.disp_buf("file.read_offset", data, size);
+      ESP_LOGI(TAG, "");
+
+      ESP_LOGI(TAG, "file.read_until test");
+      err = sdcard.file.read_until(hello, 'x', 0, &size);
+      if (err)
+      {
+            ESP_LOGI(TAG, "file.read_until failed");
+            return;
+      }
+      ESP_LOGI(TAG, "file.read_until x : %d", size);
+      ESP_LOGI(TAG, "");
+
+      err = sdcard.file.print(hello);
+      if (err)
+      {
+            return;
+      }
+
+      err = sdcard.file.stat_print(hello);
+      if (err)
+      {
+            ESP_LOGI(TAG, "file.stat_print failed");
+            return;
+      }
+
+      ESP_LOGI(TAG, "file.copy test");
+      err = sdcard.file.copy(hello, "/sdcard/foo.txt");
+      if (err)
+      {
+            ESP_LOGI(TAG, "file.copy failed");
+            return;
+      }
+      ESP_LOGI(TAG, "ok");
+      ESP_LOGI(TAG, "");
+
+      ESP_LOGI(TAG, "file.rename test");
+      err = sdcard.file.rename("/sdcard/foo.txt", "/sdcard/bar.txt");
+      if (err)
+      {
+            ESP_LOGI(TAG, "file.rename failed");
+            return;
+      }
+      ESP_LOGI(TAG, "ok");
+      ESP_LOGI(TAG, "");
+
+      ESP_LOGI(TAG, "file.delete test");
+      err = sdcard.file.delete("/sdcard/bar.txt");
+      if (err)
+      {
+            ESP_LOGI(TAG, "file.delete failed");
+            return;
+      }
+      ESP_LOGI(TAG, "ok");
+      ESP_LOGI(TAG, "");
+
+      ESP_LOGI(TAG, "dir.mkdir test");
+      err = sdcard.dir.mkdir("/sdcard/tmp");
+      if (err)
+      {
+            ESP_LOGI(TAG, "dir.mkdir failed");
+            return;
+      }
+      ESP_LOGI(TAG, "ok");
+      ESP_LOGI(TAG, "");
+
+      ESP_LOGI(TAG, "dir.exists test");
+      bool exists;
+      err = sdcard.dir.exists("/sdcard/tmp", &exists);
+      if (err)
+      {
+            ESP_LOGI(TAG, "dir.exists failed");
+            return;
+      }
+      ESP_LOGI(TAG, "%s", exists ? "true" : "false");
+      ESP_LOGI(TAG, "");
+
+      ESP_LOGI(TAG, "file.copy 2");
+      err = sdcard.file.copy(hello, "/sdcard/tmp/a.txt");
+      if (err)
+      {
+            ESP_LOGI(TAG, "file.copy 2 failed");
+            return;
+      }
+      ESP_LOGI(TAG, "ok");
+      ESP_LOGI(TAG, "");
+
+      sdcard.dir.list_print("/sdcard/tmp");
+
+      ESP_LOGI(TAG, "dir.clear test");
+      err = sdcard.dir.clear("/sdcard/tmp");
+      if (err)
+      {
+            ESP_LOGI(TAG, "dir.clear failed");
+            return;
+      }
+      ESP_LOGI(TAG, "ok");
+      ESP_LOGI(TAG, "");
+
+      ESP_LOGI(TAG, "dir.delete test");
+      err = sdcard.dir.delete("/sdcard/tmp");
+      if (err)
+      {
+            ESP_LOGI(TAG, "dir.delete failed");
+            return;
+      }
+      ESP_LOGI(TAG, "ok");
+      ESP_LOGI(TAG, "");
+
+      ESP_LOGI(TAG, "dir.list_print test");
+      err = sdcard.dir.list_print(root);
+      if (err)
+      {
+            ESP_LOGI(TAG, "dir.list_print failed");
+            return;
+      }
+      ESP_LOGI(TAG, "ok");
+      ESP_LOGI(TAG, "");
+
+} // test
 
 /**
  * @brief Capture and save a photo to SD card
@@ -68,7 +271,7 @@ static int socket_tcp_client_create(const char *ip, uint16_t port)
     MDF_LOGI("Create a tcp client, ip: %s, port: %d", ip, port);
 
     mdf_err_t ret = ESP_OK;
-    int sockfd    = -1;
+    int sockfd = -1;
     struct sockaddr_in server_addr = {
         .sin_family = AF_INET,
         .sin_port = htons(port),
@@ -85,7 +288,8 @@ static int socket_tcp_client_create(const char *ip, uint16_t port)
 
 ERR_EXIT:
 
-    if (sockfd != -1) {
+    if (sockfd != -1)
+    {
         close(sockfd);
     }
 
@@ -94,24 +298,27 @@ ERR_EXIT:
 
 void tcp_client_read_task(void *arg)
 {
-    mdf_err_t ret                     = MDF_OK;
-    char *data                        = MDF_MALLOC(MWIFI_PAYLOAD_LEN);
-    size_t size                       = MWIFI_PAYLOAD_LEN;
+    mdf_err_t ret = MDF_OK;
+    char *data = MDF_MALLOC(MWIFI_PAYLOAD_LEN);
+    size_t size = MWIFI_PAYLOAD_LEN;
     uint8_t dest_addr[MWIFI_ADDR_LEN] = {0x0};
-    mwifi_data_type_t data_type       = {0x0};
-    cJSON *json_root                  = NULL;
-    cJSON *json_addr                  = NULL;
-    cJSON *json_group                 = NULL;
-    cJSON *json_data                  = NULL;
-    cJSON *json_dest_addr             = NULL;
+    mwifi_data_type_t data_type = {0x0};
+    cJSON *json_root = NULL;
+    cJSON *json_addr = NULL;
+    cJSON *json_group = NULL;
+    cJSON *json_data = NULL;
+    cJSON *json_dest_addr = NULL;
 
     MDF_LOGI("TCP client read task is running");
 
-    while (mwifi_is_connected()) {
-        if (g_sockfd == -1) {
+    while (mwifi_is_connected())
+    {
+        if (g_sockfd == -1)
+        {
             g_sockfd = socket_tcp_client_create(CONFIG_SERVER_IP, CONFIG_SERVER_PORT);
 
-            if (g_sockfd == -1) {
+            if (g_sockfd == -1)
+            {
                 vTaskDelay(500 / portTICK_PERIOD_MS);
                 continue;
             }
@@ -121,7 +328,8 @@ void tcp_client_read_task(void *arg)
         ret = read(g_sockfd, data, size);
         MDF_LOGD("TCP read, %d, size: %d, data: %s", g_sockfd, size, data);
 
-        if (ret <= 0) {
+        if (ret <= 0)
+        {
             MDF_LOGW("<%s> TCP read", strerror(errno));
             close(g_sockfd);
             g_sockfd = -1;
@@ -137,13 +345,18 @@ void tcp_client_read_task(void *arg)
         json_addr = cJSON_GetObjectItem(json_root, "dest_addr");
         json_group = cJSON_GetObjectItem(json_root, "group");
 
-        if (json_addr) {
+        if (json_addr)
+        {
             data_type.group = false;
             json_dest_addr = json_addr;
-        } else if (json_group) {
+        }
+        else if (json_group)
+        {
             data_type.group = true;
             json_dest_addr = json_group;
-        } else {
+        }
+        else
+        {
             MDF_LOGW("Address not found");
             cJSON_Delete(json_root);
             continue;
@@ -152,13 +365,15 @@ void tcp_client_read_task(void *arg)
         /**
          * @brief  Convert mac from string format to binary
          */
-        do {
+        do
+        {
             unsigned int mac_data[MWIFI_ADDR_LEN] = {0};
             sscanf(json_dest_addr->valuestring, MACSTR,
                    mac_data, mac_data + 1, mac_data + 2,
                    mac_data + 3, mac_data + 4, mac_data + 5);
 
-            for (int i = 0; i < MWIFI_ADDR_LEN; i++) {
+            for (int i = 0; i < MWIFI_ADDR_LEN; i++)
+            {
                 dest_addr[i] = mac_data[i];
             }
         } while (0);
@@ -169,7 +384,7 @@ void tcp_client_read_task(void *arg)
         ret = mwifi_write(dest_addr, &data_type, send_data, strlen(send_data), true);
         MDF_ERROR_GOTO(ret != MDF_OK, FREE_MEM, "<%s> mwifi_root_write", mdf_err_to_name(ret));
 
-FREE_MEM:
+    FREE_MEM:
         MDF_FREE(send_data);
         cJSON_Delete(json_root);
     }
@@ -185,15 +400,17 @@ FREE_MEM:
 void tcp_client_write_task(void *arg)
 {
     mdf_err_t ret = MDF_OK;
-    char *data    = MDF_CALLOC(1, MWIFI_PAYLOAD_LEN);
-    size_t size   = MWIFI_PAYLOAD_LEN;
+    char *data = MDF_CALLOC(1, MWIFI_PAYLOAD_LEN);
+    size_t size = MWIFI_PAYLOAD_LEN;
     uint8_t src_addr[MWIFI_ADDR_LEN] = {0x0};
-    mwifi_data_type_t data_type      = {0x0};
+    mwifi_data_type_t data_type = {0x0};
 
     MDF_LOGI("TCP client write task is running");
 
-    while (mwifi_is_connected()) {
-        if (g_sockfd == -1) {
+    while (mwifi_is_connected())
+    {
+        if (g_sockfd == -1)
+        {
             vTaskDelay(500 / portTICK_PERIOD_MS);
             continue;
         }
@@ -218,16 +435,18 @@ void tcp_client_write_task(void *arg)
 
 static void node_read_task(void *arg)
 {
-    mdf_err_t ret                    = MDF_OK;
-    char *data                       = MDF_MALLOC(MWIFI_PAYLOAD_LEN);
-    size_t size                      = MWIFI_PAYLOAD_LEN;
-    mwifi_data_type_t data_type      = {0x0};
+    mdf_err_t ret = MDF_OK;
+    char *data = MDF_MALLOC(MWIFI_PAYLOAD_LEN);
+    size_t size = MWIFI_PAYLOAD_LEN;
+    mwifi_data_type_t data_type = {0x0};
     uint8_t src_addr[MWIFI_ADDR_LEN] = {0x0};
 
     MDF_LOGI("Note read task is running");
 
-    for (;;) {
-        if (!mwifi_is_connected()) {
+    for (;;)
+    {
+        if (!mwifi_is_connected())
+        {
             vTaskDelay(500 / portTICK_PERIOD_MS);
             continue;
         }
@@ -247,19 +466,21 @@ static void node_read_task(void *arg)
 
 static void node_write_task(void *arg)
 {
-    size_t size                     = 0;
-    int count                       = 0;
-    char *data                      = NULL;
-    mdf_err_t ret                   = MDF_OK;
-    mwifi_data_type_t data_type     = {0};
+    size_t size = 0;
+    int count = 0;
+    char *data = NULL;
+    mdf_err_t ret = MDF_OK;
+    mwifi_data_type_t data_type = {0};
     uint8_t sta_mac[MWIFI_ADDR_LEN] = {0};
 
     MDF_LOGI("NODE task is running");
 
     esp_wifi_get_mac(ESP_IF_WIFI_STA, sta_mac);
 
-    for (;;) {
-        if (!mwifi_is_connected()) {
+    for (;;)
+    {
+        if (!mwifi_is_connected())
+        {
             vTaskDelay(500 / portTICK_PERIOD_MS);
             continue;
         }
@@ -286,11 +507,11 @@ static void node_write_task(void *arg)
  */
 static void print_system_info_timercb(TimerHandle_t timer)
 {
-    uint8_t primary                 = 0;
-    wifi_second_chan_t second       = 0;
-    mesh_addr_t parent_bssid        = {0};
+    uint8_t primary = 0;
+    wifi_second_chan_t second = 0;
+    mesh_addr_t parent_bssid = {0};
     uint8_t sta_mac[MWIFI_ADDR_LEN] = {0};
-    wifi_sta_list_t wifi_sta_list   = {0x0};
+    wifi_sta_list_t wifi_sta_list = {0x0};
 
     esp_wifi_get_mac(ESP_IF_WIFI_STA, sta_mac);
     esp_wifi_ap_get_sta_list(&wifi_sta_list);
@@ -298,17 +519,20 @@ static void print_system_info_timercb(TimerHandle_t timer)
     esp_mesh_get_parent_bssid(&parent_bssid);
 
     MDF_LOGI("System information, channel: %d, layer: %d, self mac: " MACSTR ", parent bssid: " MACSTR
-             ", parent rssi: %d, node num: %d, free heap: %"PRIu32, primary,
+             ", parent rssi: %d, node num: %d, free heap: %" PRIu32,
+             primary,
              esp_mesh_get_layer(), MAC2STR(sta_mac), MAC2STR(parent_bssid.addr),
              mwifi_get_parent_rssi(), esp_mesh_get_total_node_num(), esp_get_free_heap_size());
 
-    for (int i = 0; i < wifi_sta_list.num; i++) {
+    for (int i = 0; i < wifi_sta_list.num; i++)
+    {
         MDF_LOGI("Child mac: " MACSTR, MAC2STR(wifi_sta_list.sta[i].mac));
     }
 
 #ifdef MEMORY_DEBUG
 
-    if (!heap_caps_check_integrity_all(true)) {
+    if (!heap_caps_check_integrity_all(true))
+    {
         MDF_LOGE("At least one heap is corrupt");
     }
 
@@ -320,10 +544,11 @@ static void print_system_info_timercb(TimerHandle_t timer)
 
 static mdf_err_t wifi_init()
 {
-    mdf_err_t ret          = nvs_flash_init();
+    mdf_err_t ret = nvs_flash_init();
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
 
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
+    {
         MDF_ERROR_ASSERT(nvs_flash_erase());
         ret = nvs_flash_init();
     }
@@ -353,42 +578,45 @@ static mdf_err_t wifi_init()
  */
 static mdf_err_t event_loop_cb(mdf_event_loop_t event, void *ctx)
 {
-    MDF_LOGI("event_loop_cb, event: %"PRIu32, event);
+    MDF_LOGI("event_loop_cb, event: %" PRIu32, event);
 
-    switch (event) {
-        case MDF_EVENT_MWIFI_STARTED:
-            MDF_LOGI("MESH is started");
-            break;
+    switch (event)
+    {
+    case MDF_EVENT_MWIFI_STARTED:
+        MDF_LOGI("MESH is started");
+        break;
 
-        case MDF_EVENT_MWIFI_PARENT_CONNECTED:
-            MDF_LOGI("Parent is connected on station interface");
+    case MDF_EVENT_MWIFI_PARENT_CONNECTED:
+        MDF_LOGI("Parent is connected on station interface");
 
-            if (esp_mesh_is_root()) {
-                esp_netif_dhcpc_start(netif_sta);
-            }
-
-            break;
-
-        case MDF_EVENT_MWIFI_PARENT_DISCONNECTED:
-            MDF_LOGI("Parent is disconnected on station interface");
-            break;
-
-        case MDF_EVENT_MWIFI_ROUTING_TABLE_ADD:
-        case MDF_EVENT_MWIFI_ROUTING_TABLE_REMOVE:
-            MDF_LOGI("total_num: %d", esp_mesh_get_total_node_num());
-            break;
-
-        case MDF_EVENT_MWIFI_ROOT_GOT_IP: {
-            MDF_LOGI("Root obtains the IP address. It is posted by LwIP stack automatically");
-            xTaskCreate(tcp_client_write_task, "tcp_client_write_task", 4 * 1024,
-                        NULL, CONFIG_MDF_TASK_DEFAULT_PRIOTY, NULL);
-            xTaskCreate(tcp_client_read_task, "tcp_server_read", 4 * 1024,
-                        NULL, CONFIG_MDF_TASK_DEFAULT_PRIOTY, NULL);
-            break;
+        if (esp_mesh_is_root())
+        {
+            esp_netif_dhcpc_start(netif_sta);
         }
 
-        default:
-            break;
+        break;
+
+    case MDF_EVENT_MWIFI_PARENT_DISCONNECTED:
+        MDF_LOGI("Parent is disconnected on station interface");
+        break;
+
+    case MDF_EVENT_MWIFI_ROUTING_TABLE_ADD:
+    case MDF_EVENT_MWIFI_ROUTING_TABLE_REMOVE:
+        MDF_LOGI("total_num: %d", esp_mesh_get_total_node_num());
+        break;
+
+    case MDF_EVENT_MWIFI_ROOT_GOT_IP:
+    {
+        MDF_LOGI("Root obtains the IP address. It is posted by LwIP stack automatically");
+        xTaskCreate(tcp_client_write_task, "tcp_client_write_task", 4 * 1024,
+                    NULL, CONFIG_MDF_TASK_DEFAULT_PRIOTY, NULL);
+        xTaskCreate(tcp_client_read_task, "tcp_server_read", 4 * 1024,
+                    NULL, CONFIG_MDF_TASK_DEFAULT_PRIOTY, NULL);
+        break;
+    }
+
+    default:
+        break;
     }
 
     return MDF_OK;
@@ -410,12 +638,40 @@ void app_main()
         ESP_LOGW(TAG, "Camera not supported, continuing with SD card only");
     }
 
-    mwifi_init_config_t cfg   = MWIFI_INIT_CONFIG_DEFAULT();
-    mwifi_config_t config     = {
-        .router_ssid     = CONFIG_ROUTER_SSID,
+    /* Initialize SD card */
+    sdcard.debug = true;
+    sdcard.version();
+    esp_err_t err = sdcard.sdmmc.mount_data4(root, clk, cmd, d0, d1, d2, d3);
+    if (err)
+    {
+        ESP_LOGI(TAG, "sdcard.sdmmc.mount_data4 error (%d) %s\n", err, esp_err_to_name(err));
+        return;
+    }
+
+    err = sdcard.info_print(root);
+    if (err)
+    {
+        ESP_LOGI(TAG, "sdcard.info_print error (%d) %s\n", err, esp_err_to_name(err));
+        return;
+    }
+
+    test();
+
+    err = sdcard.sdmmc.unmount(root);
+    if (err)
+    {
+        ESP_LOGI(TAG, "sdcard.sdmmc.unmount error (%d) %s\n", err, esp_err_to_name(err));
+        return;
+    }
+
+    ESP_LOGI(TAG, "sdcard-sdmmc-test complete\n");
+
+    mwifi_init_config_t cfg = MWIFI_INIT_CONFIG_DEFAULT();
+    mwifi_config_t config = {
+        .router_ssid = CONFIG_ROUTER_SSID,
         .router_password = CONFIG_ROUTER_PASSWORD,
-        .mesh_id         = CONFIG_MESH_ID,
-        .mesh_password   = CONFIG_MESH_PASSWORD,
+        .mesh_id = CONFIG_MESH_ID,
+        .mesh_password = CONFIG_MESH_PASSWORD,
     };
 
     /**
@@ -438,7 +694,7 @@ void app_main()
      *      group id can be a custom address
      */
     const uint8_t group_id_list[2][6] = {{0x01, 0x00, 0x5e, 0xae, 0xae, 0xae},
-                                        {0x01, 0x00, 0x5e, 0xae, 0xae, 0xaf}};
+                                         {0x01, 0x00, 0x5e, 0xae, 0xae, 0xaf}};
 
     MDF_ERROR_ASSERT(esp_mesh_set_group_id((mesh_addr_t *)group_id_list,
                                            sizeof(group_id_list) / sizeof(group_id_list[0])));
