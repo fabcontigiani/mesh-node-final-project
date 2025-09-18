@@ -39,7 +39,7 @@ static camera_config_t camera_config = {
 
     /* Image configuration */
     .pixel_format   = PIXFORMAT_JPEG,
-    .frame_size     = FRAMESIZE_UXGA,    // UXGA for better performance
+    .frame_size     = FRAMESIZE_SXGA,    // SXGA for better quality
     .jpeg_quality   = 4,                // 0-63, lower = higher quality
     .fb_count       = 1,
     .fb_location    = CAMERA_FB_IN_PSRAM,
