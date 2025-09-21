@@ -30,7 +30,47 @@
 #include "sd_pwr_ctrl_by_on_chip_ldo.h"
 #endif
 
+#include "freertos/queue.h"
+#include "driver/gpio.h"
+
+#define PIR_SENSOR_PIN 12 // GPIO 12
+
 static const char *TAG = "router_example";
+
+// Task handle for motion detection task
+static TaskHandle_t motion_detection_task_handle = NULL;
+
+// ISR handler for GPIO interrupt
+static void IRAM_ATTR gpio_isr_handler(void* arg) {
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    
+    // Notify the motion detection task
+    if (motion_detection_task_handle != NULL) {
+        vTaskNotifyGiveFromISR(motion_detection_task_handle, &xHigherPriorityTaskWoken);
+        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+    }
+}
+
+/**
+ * @brief Task to handle motion detection notifications
+ */
+static void motion_detection_task(void *arg)
+{
+    ESP_LOGI(TAG, "Motion detection task started");
+    
+    for (;;) {
+        // Wait for notification from ISR
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        
+        // Print motion detected message
+        ESP_LOGI(TAG, "*** MOVEMENT DETECTED! *** PIR sensor triggered");
+        
+        // Optional: Add debouncing delay to prevent spam
+        vTaskDelay(500 / portTICK_PERIOD_MS);
+    }
+    
+    vTaskDelete(NULL);
+}
 
 // #define MEMORY_DEBUG
 
@@ -513,4 +553,26 @@ void app_main()
     TimerHandle_t timer = xTimerCreate("print_system_info", 10000 / portTICK_PERIOD_MS,
                                        true, NULL, print_system_info_timercb);
     xTimerStart(timer, 0);
+
+    // Create motion detection task
+    ESP_LOGI(TAG, "Creating motion detection task...");
+    BaseType_t ret_task = xTaskCreate(motion_detection_task, "motion_detection", 2048, NULL, 5, &motion_detection_task_handle);
+    if (ret_task != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create motion detection task");
+        return;
+    }
+
+    // Configure GPIO 12 as input with pull-down and interrupt on rising edge
+    gpio_config_t io_conf = {
+        .intr_type = GPIO_INTR_POSEDGE,
+        .mode = GPIO_MODE_INPUT,
+        .pin_bit_mask = (1ULL << PIR_SENSOR_PIN),
+        .pull_down_en = 1,
+        .pull_up_en = 0,
+    };
+    gpio_config(&io_conf);
+
+    // Install GPIO ISR service and add handler
+    // gpio_install_isr_service(0); // already installed
+    gpio_isr_handler_add(PIR_SENSOR_PIN, gpio_isr_handler, NULL);
 }
