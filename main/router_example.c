@@ -38,6 +38,7 @@
 #include "driver/gpio.h"
 
 #define PIR_SENSOR_PIN 12 // GPIO 12
+#define DATA_BUFFER_SIZE 65536 // 64KB buffer for ESP-CAM image data
 
 // Structure to hold received data for storage task
 typedef struct {
@@ -48,7 +49,7 @@ typedef struct {
 } received_data_t;
 
 // HTTP server configuration
-#define HTTP_SERVER_URL "http://192.168.0.183:8000/upload/"  // Change this to your server
+#define HTTP_SERVER_URL "http://fabcontigiani.uno:8000/upload/"  // Change this to your server
 #define HTTP_TIMEOUT_MS 10000
 
 static const char *TAG = "router_example";
@@ -189,7 +190,7 @@ static void http_post_task(void *arg)
             
             snprintf(form_start, sizeof(form_start),
                 "--%s\r\n"
-                "Content-Disposition: form-data; name=\"file\"; filename=\"%s\"\r\n"
+                "Content-Disposition: form-data; name=\"image\"; filename=\"%s\"\r\n"
                 "Content-Type: image/jpeg\r\n\r\n", 
                 boundary, filename);
             snprintf(form_end, sizeof(form_end), "\r\n--%s--\r\n", boundary);
@@ -198,12 +199,18 @@ static void http_post_task(void *arg)
             int end_len = strlen(form_end);
             int total_body_len = start_len + received_item.size + end_len;
             
-            // Allocate memory for complete body
-            uint8_t *complete_body = MDF_MALLOC(total_body_len);
+            // Allocate memory for complete body in PSRAM
+            uint8_t *complete_body = heap_caps_calloc(1, total_body_len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
             if (complete_body == NULL) {
-                ESP_LOGE(TAG, "Failed to allocate memory for HTTP body");
-                MDF_FREE(received_item.data);
-                continue;
+                ESP_LOGW(TAG, "Failed to allocate HTTP body in PSRAM, trying regular heap (%d bytes)", total_body_len);
+                complete_body = MDF_MALLOC(total_body_len);
+                if (complete_body == NULL) {
+                    ESP_LOGE(TAG, "Failed to allocate memory for HTTP body (%d bytes)", total_body_len);
+                    ESP_LOGE(TAG, "Free heap: %u bytes, largest free block: %u bytes", 
+                             esp_get_free_heap_size(), heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+                    MDF_FREE(received_item.data);
+                    continue;
+                }
             }
             
             // Build complete multipart body
@@ -551,8 +558,25 @@ static mdf_err_t sd_init()
 static void root_task(void *arg)
 {
     mdf_err_t ret = MDF_OK;
-    uint8_t *data = MDF_MALLOC(MWIFI_PAYLOAD_LEN);
-    size_t size = MWIFI_PAYLOAD_LEN;
+    // Allocate larger data buffer in PSRAM for ESP-CAM image data
+    // Use 64KB buffer to handle larger image chunks or accumulated data
+    uint8_t *data = heap_caps_calloc(1, DATA_BUFFER_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (data == NULL) {
+        ESP_LOGW(TAG, "Failed to allocate 64KB data buffer in PSRAM, trying smaller size");
+        data = heap_caps_calloc(1, MWIFI_PAYLOAD_LEN, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (data == NULL) {
+            ESP_LOGW(TAG, "Failed to allocate in PSRAM, trying regular heap");
+            data = MDF_MALLOC(MWIFI_PAYLOAD_LEN);
+            if (data == NULL) {
+                ESP_LOGE(TAG, "Failed to allocate data buffer");
+                ESP_LOGE(TAG, "Free heap: %u bytes, largest free block: %u bytes", 
+                         esp_get_free_heap_size(), heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+                vTaskDelete(NULL);
+                return;
+            }
+        }
+    }
+    size_t size = DATA_BUFFER_SIZE;
 
     uint8_t src_addr[MWIFI_ADDR_LEN] = {0x0};
     mwifi_data_type_t data_type = {0};
@@ -594,8 +618,8 @@ static void root_task(void *arg)
             continue;
         }
 
-        size = MWIFI_PAYLOAD_LEN;
-        memset(data, 0, MWIFI_PAYLOAD_LEN);
+        size = DATA_BUFFER_SIZE;
+        memset(data, 0, DATA_BUFFER_SIZE);
         ret = mwifi_root_read(src_addr, &data_type, data, &size, portMAX_DELAY);
         MDF_ERROR_CONTINUE(ret != MDF_OK, "<%s> mwifi_root_read", mdf_err_to_name(ret));
         MDF_LOGI("Root receive, addr: " MACSTR ", size: %d", MAC2STR(src_addr), size);
@@ -612,11 +636,18 @@ static void root_task(void *arg)
         received_item.data_type = data_type;
         received_item.size = size;
         
-        // Allocate memory for the data copy
-        received_item.data = MDF_MALLOC(size);
+        // Allocate memory for the data copy in PSRAM (for large image data)
+        received_item.data = heap_caps_calloc(1, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (received_item.data == NULL) {
-            ESP_LOGE(TAG, "Failed to allocate memory for received data");
-            continue;
+            ESP_LOGW(TAG, "Failed to allocate in PSRAM, trying regular heap for %zu bytes", size);
+            // Fallback to regular heap for smaller data
+            received_item.data = MDF_MALLOC(size);
+            if (received_item.data == NULL) {
+                ESP_LOGE(TAG, "Failed to allocate memory for received data (%zu bytes)", size);
+                ESP_LOGE(TAG, "Free heap: %u bytes, largest free block: %u bytes", 
+                         esp_get_free_heap_size(), heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+                continue;
+            }
         }
         memcpy(received_item.data, data, size);
         
@@ -917,7 +948,7 @@ void app_main()
         return;
     }
     
-    ret_task = xTaskCreate(http_post_task, "http_post_task", 8192, NULL, 4, &http_task_handle);
+    ret_task = xTaskCreate(http_post_task, "http_post_task", 12288, NULL, 4, &http_task_handle);
     if (ret_task != pdPASS) {
         ESP_LOGE(TAG, "Failed to create HTTP POST task");
         vQueueDelete(http_queue);
