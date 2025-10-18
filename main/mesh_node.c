@@ -19,6 +19,7 @@
 #include "camera_driver.h"
 
 #include <string.h>
+#include <stdbool.h>
 #include <sys/unistd.h>
 #include <sys/stat.h>
 #include <errno.h>
@@ -27,41 +28,37 @@
 #include "driver/sdmmc_host.h"
 #include "driver/gpio.h"
 #include "sd_test_io.h"
-#include "esp_http_client.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
+#include "esp_mesh.h"
 #if SOC_SDMMC_IO_POWER_EXTERNAL
 #include "sd_pwr_ctrl_by_on_chip_ldo.h"
 #endif
 
-#include "freertos/queue.h"
-#include "driver/gpio.h"
-
 #define PIR_SENSOR_PIN 12 // GPIO 12
-#define DATA_BUFFER_SIZE 65536 // 64KB buffer for ESP-CAM image data
 
-// Structure to hold received data for storage task
-typedef struct {
-    uint8_t src_addr[MWIFI_ADDR_LEN];
-    uint8_t *data;
-    size_t size;
-    mwifi_data_type_t data_type;
-} received_data_t;
+static const char *TAG = "mesh_node";
 
-// HTTP server configuration
-#define HTTP_SERVER_URL "http://fabcontigiani.uno:8000/upload/"  // Change this to your server
-#define HTTP_TIMEOUT_MS 10000
+static mesh_addr_t s_known_root_addr = {0};
+static bool s_root_addr_valid = false;
 
-static const char *TAG = "router_example";
+static void remember_root_addr(const mesh_addr_t *addr)
+{
+    if (!addr)
+    {
+        return;
+    }
+
+    if (!s_root_addr_valid || memcmp(s_known_root_addr.addr, addr->addr, MWIFI_ADDR_LEN) != 0)
+    {
+        memcpy(s_known_root_addr.addr, addr->addr, MWIFI_ADDR_LEN);
+        s_root_addr_valid = true;
+        ESP_LOGI(TAG, "Tracking preferred root: " MACSTR, MAC2STR(s_known_root_addr.addr));
+    }
+}
 
 // Task handle for motion detection task
 static TaskHandle_t motion_detection_task_handle = NULL;
-
-// Queue and task handle for HTTP operations
-static QueueHandle_t http_queue = NULL;
-static TaskHandle_t http_task_handle = NULL;
-
-#define HTTP_QUEUE_SIZE 10
 
 // ISR handler for GPIO interrupt
 static void IRAM_ATTR gpio_isr_handler(void *arg)
@@ -144,161 +141,6 @@ static void motion_detection_task(void *arg)
     vTaskDelete(NULL);
 }
 
-/**
- * @brief Task to handle HTTP POST of received data
- */
-static void http_post_task(void *arg)
-{
-    ESP_LOGI(TAG, "HTTP POST task started");
-    received_data_t received_item;
-    
-    for (;;)
-    {
-        // Wait for data to be queued
-        if (xQueueReceive(http_queue, &received_item, portMAX_DELAY) == pdTRUE)
-        {
-            ESP_LOGI(TAG, "Processing received data from: " MACSTR " (%d bytes)", 
-                     MAC2STR(received_item.src_addr), received_item.size);
-            
-            // Validate received data
-            if (received_item.data == NULL || received_item.size == 0) {
-                ESP_LOGW(TAG, "Invalid received data, skipping HTTP POST");
-                if (received_item.data != NULL) {
-                    MDF_FREE(received_item.data);
-                }
-                continue;
-            }
-            
-            // Generate filename for the upload
-            char filename[64];
-            snprintf(filename, sizeof(filename), 
-                     "received_%02x%02x%02x%02x%02x%02x_%lu.jpg", 
-                     received_item.src_addr[0], received_item.src_addr[1], 
-                     received_item.src_addr[2], received_item.src_addr[3], 
-                     received_item.src_addr[4], received_item.src_addr[5], 
-                     (unsigned long)(esp_timer_get_time() / 1000));
-            
-            ESP_LOGI(TAG, "Sending received data via HTTP POST: %s (%d bytes)", filename, received_item.size);
-            ESP_LOGI(TAG, "HTTP Server URL: %s", HTTP_SERVER_URL);
-            
-            // Try using esp_http_client_perform with pre-built data
-            // Create the complete multipart body in memory first
-            char boundary[] = "----WebKitFormBoundary7MA4YWxkTrZu0gW";
-            
-            char form_start[512];
-            char form_end[128];
-            
-            snprintf(form_start, sizeof(form_start),
-                "--%s\r\n"
-                "Content-Disposition: form-data; name=\"image\"; filename=\"%s\"\r\n"
-                "Content-Type: image/jpeg\r\n\r\n", 
-                boundary, filename);
-            snprintf(form_end, sizeof(form_end), "\r\n--%s--\r\n", boundary);
-            
-            int start_len = strlen(form_start);
-            int end_len = strlen(form_end);
-            int total_body_len = start_len + received_item.size + end_len;
-            
-            // Allocate memory for complete body in PSRAM
-            uint8_t *complete_body = heap_caps_calloc(1, total_body_len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-            if (complete_body == NULL) {
-                ESP_LOGW(TAG, "Failed to allocate HTTP body in PSRAM, trying regular heap (%d bytes)", total_body_len);
-                complete_body = MDF_MALLOC(total_body_len);
-                if (complete_body == NULL) {
-                    ESP_LOGE(TAG, "Failed to allocate memory for HTTP body (%d bytes)", total_body_len);
-                    ESP_LOGE(TAG, "Free heap: %u bytes, largest free block: %u bytes", 
-                             esp_get_free_heap_size(), heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
-                    MDF_FREE(received_item.data);
-                    continue;
-                }
-            }
-            
-            // Build complete multipart body
-            memcpy(complete_body, form_start, start_len);
-            memcpy(complete_body + start_len, received_item.data, received_item.size);
-            memcpy(complete_body + start_len + received_item.size, form_end, end_len);
-            
-            ESP_LOGI(TAG, "Built complete multipart body: %d bytes", total_body_len);
-            ESP_LOGI(TAG, "Form structure preview: %.100s", (char*)complete_body);
-            
-            // Configure HTTP client with complete body
-            esp_http_client_config_t config = {
-                .url = HTTP_SERVER_URL,
-                .method = HTTP_METHOD_POST,
-                .timeout_ms = HTTP_TIMEOUT_MS,
-                .max_redirection_count = 5,
-                .disable_auto_redirect = false,
-            };
-            
-            esp_http_client_handle_t client = esp_http_client_init(&config);
-            if (client == NULL) {
-                ESP_LOGE(TAG, "Failed to initialize HTTP client");
-                MDF_FREE(received_item.data);
-                MDF_FREE(complete_body);
-                continue;
-            }
-            
-            // Set content type header
-            char content_type[128];
-            snprintf(content_type, sizeof(content_type), "multipart/form-data; boundary=%s", boundary);
-            esp_http_client_set_header(client, "Content-Type", content_type);
-            
-            // Set the complete body
-            esp_http_client_set_post_field(client, (char*)complete_body, total_body_len);
-            
-            // Perform the request
-            esp_err_t err = esp_http_client_perform(client);
-            
-            if (err == ESP_OK) {
-                ESP_LOGI(TAG, "HTTP request completed successfully");
-            } else {
-                ESP_LOGE(TAG, "HTTP request failed: %s", esp_err_to_name(err));
-            }
-            
-            // Get response details
-            int status_code = esp_http_client_get_status_code(client);
-            int content_length = esp_http_client_get_content_length(client);
-            
-            ESP_LOGI(TAG, "HTTP POST completed - Status: %d, Content-Length: %d", status_code, content_length);
-            
-            if (status_code >= 200 && status_code < 300) {
-                ESP_LOGI(TAG, "Successfully uploaded image: %s", filename);
-            } else if (status_code >= 300 && status_code < 400) {
-                // Handle redirect responses
-                ESP_LOGW(TAG, "HTTP redirect response: %d", status_code);
-                
-                // Get the Location header for debugging
-                // char location_buffer[256];
-                // int location_len = esp_http_client_get_header(client, "Location", location_buffer, sizeof(location_buffer) - 1);
-                // if (location_len > 0) {
-                //     location_buffer[location_len] = '\0';
-                //     ESP_LOGW(TAG, "Redirect location: %s", location_buffer);
-                // }
-                
-                ESP_LOGE(TAG, "HTTP upload failed due to redirect: %d", status_code);
-            } else {
-                ESP_LOGE(TAG, "HTTP upload failed with status: %d", status_code);
-                
-                // Read error response if available
-                if (content_length > 0 && content_length < 1024) {
-                    char response_buffer[1024];
-                    int read_len = esp_http_client_read_response(client, response_buffer, sizeof(response_buffer) - 1);
-                    if (read_len > 0) {
-                        response_buffer[read_len] = '\0';
-                        ESP_LOGE(TAG, "Server response: %s", response_buffer);
-                    }
-                }
-            }
-            
-            // Cleanup
-            esp_http_client_cleanup(client);
-            MDF_FREE(complete_body);
-            MDF_FREE(received_item.data);
-        }
-    }
-    
-    vTaskDelete(NULL);
-}
 
 // #define MEMORY_DEBUG
 
@@ -555,127 +397,6 @@ static mdf_err_t sd_init()
     return ret;
 }
 
-static void root_task(void *arg)
-{
-    mdf_err_t ret = MDF_OK;
-    // Allocate larger data buffer in PSRAM for ESP-CAM image data
-    // Use 64KB buffer to handle larger image chunks or accumulated data
-    uint8_t *data = heap_caps_calloc(1, DATA_BUFFER_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (data == NULL) {
-        ESP_LOGW(TAG, "Failed to allocate 64KB data buffer in PSRAM, trying smaller size");
-        data = heap_caps_calloc(1, MWIFI_PAYLOAD_LEN, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (data == NULL) {
-            ESP_LOGW(TAG, "Failed to allocate in PSRAM, trying regular heap");
-            data = MDF_MALLOC(MWIFI_PAYLOAD_LEN);
-            if (data == NULL) {
-                ESP_LOGE(TAG, "Failed to allocate data buffer");
-                ESP_LOGE(TAG, "Free heap: %u bytes, largest free block: %u bytes", 
-                         esp_get_free_heap_size(), heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
-                vTaskDelete(NULL);
-                return;
-            }
-        }
-    }
-    size_t size = DATA_BUFFER_SIZE;
-
-    uint8_t src_addr[MWIFI_ADDR_LEN] = {0x0};
-    mwifi_data_type_t data_type = {0};
-
-    MDF_LOGI("Root task is running");
-
-    // Wait until node is actually root before attempting to read
-    while (!esp_mesh_is_root()) {
-        ESP_LOGI(TAG, "Waiting to become root node...");
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
-        
-        if (!mwifi_is_started()) {
-            ESP_LOGW(TAG, "Mesh not started, waiting...");
-            vTaskDelay(1000 / portTICK_PERIOD_MS);
-            continue;
-        }
-    }
-    
-    ESP_LOGI(TAG, "Node is now root, starting to read data");
-
-    for (;;)
-    {
-        if (!mwifi_is_started())
-        {
-            vTaskDelay(500 / portTICK_RATE_MS);
-            continue;
-        }
-
-        // Double-check we're still root before attempting read
-        if (!esp_mesh_is_root()) {
-            ESP_LOGW(TAG, "Node is no longer root, waiting to become root again...");
-            while (!esp_mesh_is_root()) {
-                vTaskDelay(1000 / portTICK_PERIOD_MS);
-                if (!mwifi_is_started()) {
-                    break;
-                }
-            }
-            ESP_LOGI(TAG, "Node is root again, resuming data reading");
-            continue;
-        }
-
-        size = DATA_BUFFER_SIZE;
-        memset(data, 0, DATA_BUFFER_SIZE);
-        ret = mwifi_root_read(src_addr, &data_type, data, &size, portMAX_DELAY);
-        MDF_ERROR_CONTINUE(ret != MDF_OK, "<%s> mwifi_root_read", mdf_err_to_name(ret));
-        MDF_LOGI("Root receive, addr: " MACSTR ", size: %d", MAC2STR(src_addr), size);
-
-        // Validate received data size
-        if (size == 0) {
-            ESP_LOGW(TAG, "Received empty data, skipping save");
-            continue;
-        }
-
-        // Prepare data for storage task
-        received_data_t received_item;
-        memcpy(received_item.src_addr, src_addr, MWIFI_ADDR_LEN);
-        received_item.data_type = data_type;
-        received_item.size = size;
-        
-        // Allocate memory for the data copy in PSRAM (for large image data)
-        received_item.data = heap_caps_calloc(1, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (received_item.data == NULL) {
-            ESP_LOGW(TAG, "Failed to allocate in PSRAM, trying regular heap for %zu bytes", size);
-            // Fallback to regular heap for smaller data
-            received_item.data = MDF_MALLOC(size);
-            if (received_item.data == NULL) {
-                ESP_LOGE(TAG, "Failed to allocate memory for received data (%zu bytes)", size);
-                ESP_LOGE(TAG, "Free heap: %u bytes, largest free block: %u bytes", 
-                         esp_get_free_heap_size(), heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
-                continue;
-            }
-        }
-        memcpy(received_item.data, data, size);
-        
-        // Queue the data for HTTP POST task
-        if (http_queue != NULL) {
-            if (xQueueSend(http_queue, &received_item, pdMS_TO_TICKS(1000)) != pdTRUE) {
-                ESP_LOGE(TAG, "Failed to queue received data for HTTP POST (queue full?)");
-                MDF_FREE(received_item.data); // Free memory if queueing failed
-            } else {
-                ESP_LOGI(TAG, "Queued received data for HTTP POST");
-            }
-        } else {
-            ESP_LOGE(TAG, "HTTP queue not initialized");
-            MDF_FREE(received_item.data);
-        }
-
-        // size = sprintf(data, "(%d) Hello node!", i);
-        // ret = mwifi_root_write(src_addr, 1, &data_type, data, size, true);
-        // MDF_ERROR_CONTINUE(ret != MDF_OK, "mwifi_root_recv, ret: %x", ret);
-        // MDF_LOGI("Root send, addr: " MACSTR ", size: %d, data: %s", MAC2STR(src_addr), size, data);
-    }
-
-    MDF_LOGW("Root is exit");
-
-    MDF_FREE(data);
-    vTaskDelete(NULL);
-}
-
 /**
  * @brief Capture and save a photo to SD card with counter
  * @param photo_counter Counter for unique photo naming
@@ -839,11 +560,44 @@ static mdf_err_t event_loop_cb(mdf_event_loop_t event, void *ctx)
             esp_netif_dhcpc_start(netif_sta);
         }
 
+        mesh_addr_t parent = {0};
+        esp_mesh_get_parent_bssid(&parent);
+
+        if (!esp_mesh_is_root())
+        {
+            remember_root_addr(&parent);
+        }
+
         break;
 
     case MDF_EVENT_MWIFI_PARENT_DISCONNECTED:
         MDF_LOGI("Parent is disconnected on station interface");
         break;
+
+    case MDF_EVENT_MWIFI_ROOT_SWITCH_REQ:
+    {
+        ESP_LOGI(TAG, "Root switch requested");
+        const mesh_event_root_switch_req_t *switch_req = (const mesh_event_root_switch_req_t *)ctx;
+
+        mesh_addr_t candidate = {0};
+        mesh_vote_reason_t reason = MESH_VOTE_REASON_ROOT_INITIATED;
+
+        if (switch_req != NULL)
+        {
+            candidate = switch_req->rc_addr;
+            reason = switch_req->reason;
+            remember_root_addr(&candidate);
+            ESP_LOGI(TAG, "Switch candidate: " MACSTR ", reason: %d", MAC2STR(candidate.addr), reason);
+        }
+
+        if (esp_mesh_is_root())
+        {
+            ESP_LOGI(TAG, "Waiving temporary root role");
+            esp_mesh_waive_root(NULL, reason);
+        }
+
+        break;
+    }
 
     case MDF_EVENT_MWIFI_ROUTING_TABLE_ADD:
     case MDF_EVENT_MWIFI_ROUTING_TABLE_REMOVE:
@@ -898,6 +652,7 @@ void app_main()
         .router_password = CONFIG_ROUTER_PASSWORD,
         .mesh_id = CONFIG_MESH_ID,
         .mesh_password = CONFIG_MESH_PASSWORD,
+        .mesh_type = MWIFI_MESH_NODE,
     };
 
     /**
@@ -925,11 +680,15 @@ void app_main()
     MDF_ERROR_ASSERT(esp_mesh_set_group_id((mesh_addr_t *)group_id_list,
                                            sizeof(group_id_list) / sizeof(group_id_list[0])));
 
-    ESP_LOGI(TAG, "Mesh initialization complete. Waiting for root to get IP...");
+    ESP_LOGI(TAG, "Mesh initialization complete");
 
     TimerHandle_t timer = xTimerCreate("print_system_info", 10000 / portTICK_PERIOD_MS,
                                        true, NULL, print_system_info_timercb);
     xTimerStart(timer, 0);
+
+
+    MDF_LOGI("Creating capture photo task...");
+    xTaskCreate(capture_photo_task, "capture_photo_task", 4 * 1024, NULL, CONFIG_MDF_TASK_DEFAULT_PRIOTY, NULL);
 
     // Create motion detection task
     ESP_LOGI(TAG, "Creating motion detection task...");
@@ -939,22 +698,6 @@ void app_main()
         ESP_LOGE(TAG, "Failed to create motion detection task");
         return;
     }
-
-    // Create HTTP queue and task
-    ESP_LOGI(TAG, "Creating HTTP queue and task...");
-    http_queue = xQueueCreate(HTTP_QUEUE_SIZE, sizeof(received_data_t));
-    if (http_queue == NULL) {
-        ESP_LOGE(TAG, "Failed to create HTTP queue");
-        return;
-    }
-    
-    ret_task = xTaskCreate(http_post_task, "http_post_task", 12288, NULL, 4, &http_task_handle);
-    if (ret_task != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create HTTP POST task");
-        vQueueDelete(http_queue);
-        return;
-    }
-    ESP_LOGI(TAG, "HTTP queue and task created successfully");
 
     // Configure GPIO 12 as input with pull-down and interrupt on rising edge
     gpio_config_t io_conf = {
@@ -969,10 +712,5 @@ void app_main()
     // Install GPIO ISR service and add handler
     // gpio_install_isr_service(0); // already installed
     gpio_isr_handler_add(PIR_SENSOR_PIN, gpio_isr_handler, NULL);
-
-
-    MDF_LOGI("Creating root task...");
-    xTaskCreate(root_task, "root_task", 4 * 1024,
-                NULL, CONFIG_MDF_TASK_DEFAULT_PRIOTY, NULL);
 
 }
