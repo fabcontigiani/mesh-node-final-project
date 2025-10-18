@@ -1,4 +1,4 @@
-idf_component_register(SRCS "router_example.c" "camera_driver.c"
+idf_component_register(SRCS "mesh_node.c" "camera_driver.c"
                     INCLUDE_DIRS ""
                     REQUIRES mcommon mconfig mwifi mlink json driver fatfs sd_card
                     WHOLE_ARCHIVE
